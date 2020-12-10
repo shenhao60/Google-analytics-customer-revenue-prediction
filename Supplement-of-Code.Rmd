@@ -1,0 +1,345 @@
+---
+title: "Supplement of Code"
+author: 'Hao Shen'
+dtae: '11/28/2020'
+output: html_notebook
+---
+
+# Import packages and data
+```{r}
+pacman::p_load(tidyverse,reader,lubridate,lme4,sjPlot)
+train=read_csv("../train_v2.csv",col_types=cols(date=col_number(),
+                                                fullVisitorId=col_character(),
+                                                visitId=col_character(),
+                                                visitStartTime=col_number()))
+test=read_csv("../test_v2.csv",col_types=cols(date=col_number(),
+                                              fullVisitorId=col_character(),
+                                              visitId=col_character(),
+                                              visitStartTime=col_number()))
+```
+# Transfer json data
+## Test data set
+```{r}
+# device
+device=test%>%
+  {paste(.$device,collapse=",")}%>%
+  {paste("[",.,"]")}%>%
+  fromJSON(flatten=T)
+# geoNetwork
+geoNetwork=test%>%
+  {paste(.$geoNetwork,collapse=",")}%>%
+  {paste("[",.,"]")}%>%
+  fromJSON(flatten=T)
+# totals
+totals=test%>%
+  {paste(.$totals,collapse=",")}%>%
+  {paste("[",.,"]")}%>%
+  fromJSON(flatten=T)
+# trafficSource
+trafficSource=test%>%
+  {paste(.$trafficSource,collapse=",")}%>%
+  {paste("[",.,"]")}%>%
+  fromJSON(flatten=T)
+# combind
+test=cbind(test,device,geoNetwork,totals,trafficSource)%>%
+  select(-device,-geoNetwork,-totals,-trafficSource)
+```
+## Train data set
+```{r}
+# device
+device=train%>%
+  {paste(.$device,collapse=",")}%>%
+  {paste("[",.,"]")}%>%
+  fromJSON(flatten=T)
+# geoNetwork
+geoNetwork=train%>%
+  {paste(.$geoNetwork,collapse=",")}%>%
+  {paste("[",.,"]")}%>%
+  fromJSON(flatten=T)
+# totals
+totals=train%>%
+  {paste(.$totals,collapse=",")}%>%
+  {paste("[",.,"]")}%>%
+  fromJSON(flatten=T)
+# trafficSource
+trafficSource=train%>%
+  {paste(.$trafficSource,collapse=",")}%>%
+  {paste("[",.,"]")}%>%
+  fromJSON(flatten=T)
+# combind
+train=cbind(train,device,geoNetwork,totals,trafficSource)%>%
+  select(-device,-geoNetwork,-totals,-trafficSource)
+rm(device,geoNetwork,totals,trafficSource)
+gc()
+```
+
+# Select useful columms
+## Delete different and unique column
+The train data set has 58 variables while only 57 for test data set. Unique colum are those variables with just one value.
+```{r}
+# Different column
+for(i in colnames(train))if(!(i%in%colnames(test)))cat(i)
+for(i in colnames(test))if(!(i%in%colnames(train)))cat(i)
+train=select(train,-campaignCode)
+# Unique column
+for(i in 1:ncol(train)){
+  if(i==1)
+    uni_value=data.frame(colnames(train)[i],length(unique(train[,i])))
+  else 
+    uni_value=rbind(uni_value,
+                    data.frame(colnames(train)[i],length(unique(train[,i]))))
+}
+for(i in 1:nrow(uni_value)){
+  if(uni_value[i,2]==1){
+    train=select(train,-uni_value[i,1])
+    test=select(test,-uni_value[i,1])
+  }
+}
+
+for(i in 1:ncol(test)){
+  if(i==1)
+    uni_value=data.frame(colnames(test)[i],length(unique(test[,i])))
+  else 
+    uni_value=rbind(uni_value,
+                    data.frame(colnames(test)[i],length(unique(test[,i]))))
+}
+
+rm(i)
+#write.csv(train,'train2.csv',row.names = F)
+#write.csv(test,'test2.csv',row.names = F)
+```
+
+##  Select columns according to plots
+```{r}
+if(F){
+for(i in colnames(train)){
+  x=data.frame(Variable=i,Value=train[[i]])%>%
+    group_by(Variable,Value)%>%dplyr::summarise(count=n())%>%
+    arrange(desc(count))
+    x$Value=as.character(x$Value)
+  if(nrow(x)>7){
+    x=rbind(data.frame(x[1,1],Value='Others',count=sum(x[7:nrow(x),3])),x)
+    x=x[1:8,]
+}
+  if(i==colnames(train)[1])
+    D_bar=x
+  else D_bar=rbind(D_bar,x)
+}
+for (i in 1:ncol(train)) {
+  D_bar[D_bar$Variable%in%unique(D_bar$Variable)[i],]%>%
+  ggplot( aes(Variable, count, fill = Value)) +
+  geom_col(position = 'fill', width = 0.6) 
+   # theme(legend.position = "none")+
+}
+}
+
+trainS=train%>%
+  transmute(channelGrouping=as.factor(channelGrouping),
+   date=ymd(date),
+   year=year(date),
+   month=month(date),
+   day=day(date),
+   hour=hour(as.POSIXlt(as.numeric(visitStartTime),origin="1970-01-01")),
+   minute=minute(as.POSIXlt(as.numeric(visitStartTime), origin="1970-01-01")),
+   fullVisitorId,
+   visitNumber=as.numeric(visitNumber),
+   operatingSystem=as.factor(operatingSystem),
+   deviceCategory=as.factor(deviceCategory),
+   continent=as.factor(subContinent),
+   country=as.factor(country),
+   hits=as.numeric(hits),
+   pageviews=pageviews%>%{ifelse(is.na(.),0,as.numeric(.))},
+   bounces=!(is.na(bounces)),
+   newVisits=!(is.na(newVisits)),
+   sessionDim=sessionQualityDim%>%{ifelse(is.na(.),0,as.numeric(.))},
+   timeOnSite=timeOnSite%>%{ifelse(is.na(.),0,as.numeric(.))},
+   Revenue=transactionRevenue%>%{ifelse(is.na(.),0,as.numeric(.))},
+   source=as.factor(source),
+   medium=as.factor(medium),
+   trueDirect=!(is.na(isTrueDirect)),
+   isVideoAd=!(is.na(adwordsClickInfo.isVideoAd)))
+testS=test%>%
+  transmute(channelGrouping=as.factor(channelGrouping),
+   date=ymd(date),
+   year=year(date),
+   month=month(date),
+   day=day(date),
+   hour=hour(as.POSIXlt(as.numeric(visitStartTime),origin="1970-01-01")),
+   minute=minute(as.POSIXlt(as.numeric(visitStartTime), origin="1970-01-01")),
+   fullVisitorId,
+   visitNumber=as.numeric(visitNumber),
+   operatingSystem=as.factor(operatingSystem),
+   deviceCategory=as.factor(deviceCategory),
+   continent=as.factor(subContinent),
+   country=as.factor(country),
+   hits=as.numeric(hits),
+   pageviews=pageviews%>%{ifelse(is.na(.),0,as.numeric(.))},
+   bounces=!(is.na(bounces)),
+   newVisits=!(is.na(newVisits)),
+   sessionDim=sessionQualityDim%>%{ifelse(is.na(.),0,as.numeric(.))},
+   timeOnSite=timeOnSite%>%{ifelse(is.na(.),0,as.numeric(.))},
+   Revenue=transactionRevenue%>%{ifelse(is.na(.),0,as.numeric(.))},
+   source=as.factor(source),
+   medium=as.factor(medium),
+   trueDirect=!(is.na(isTrueDirect)),
+   isVideoAd=!(is.na(adwordsClickInfo.isVideoAd)))
+write.csv(trainS,'trainS.csv',row.names = F)
+write.csv(testS,'testS.csv',row.names = F)
+rm(D_bar,uni_value,i,x,test,train,)
+```
+# Plot outcome and predictors
+```{r}
+# Outcome
+set.seed(100)
+trainS=read_csv("trainS.csv", 
+                col_types=cols(date = col_date(format = "%Y-%m-%d"),
+                            year = col_number(), month = col_number(),
+                            day = col_number(), hour = col_number(),
+                            minute = col_number(), visitNumber = col_integer(),
+                            hits = col_integer(), pageviews = col_integer(),
+                            sessionDim = col_integer(), 
+                            timeOnSite = col_integer()))
+testS=read_csv("testS.csv", 
+                col_types=cols(date = col_date(format = "%Y-%m-%d"),
+                            year = col_number(), month = col_number(),
+                            day = col_number(), hour = col_number(),
+                            minute = col_number(), visitNumber = col_integer(),
+                            hits = col_integer(), pageviews = col_integer(),
+                            sessionDim = col_integer(), 
+                            timeOnSite = col_integer()))
+train=nrow(trainS)
+data=rbind(trainS,testS)
+data$Revenue_log=log(data$Revenue+1)
+cat(1-sum(data$Revenue_log!=0)/nrow(data))
+g1=ggplot(data)+
+  geom_histogram(aes(Revenue_log),bins=10)
+g2=ggplot(data[data$Revenue>0,])+
+  geom_histogram(aes(Revenue_log),bins=50)
+data1=data[data$Revenue>0,]
+train1=nrow(trainS[trainS$Revenue>0,])
+write.csv(data1,'data.csv',row.names = F)
+```
+
+```{r}
+# Outcome VS predictors
+gchannelGrouping=data1%>%
+  group_by(channelGrouping)%>%summarise(Revenue_log=sum(Revenue_log))%>%
+  ggplot()+
+  geom_bar(aes(channelGrouping,Revenue_log),stat='identity')+
+  coord_flip()
+
+gdate=data1%>%
+  group_by(date)%>%summarise(Revenue_log=sum(Revenue_log))%>%
+  ggplot()+
+  geom_line(aes(date,Revenue_log))
+
+gyear=data1%>%
+  group_by(year)%>%summarise(Revenue_log=sum(Revenue_log))%>%
+  ggplot()+
+  geom_bar(aes(year,Revenue_log),stat='identity')
+
+gmonth=data1%>%
+  group_by(month)%>%summarise(Revenue_log=sum(Revenue_log))%>%
+  ggplot()+
+  geom_bar(aes(as.factor(month),Revenue_log),stat='identity')
+
+gday=data1%>%
+  group_by(day)%>%summarise(Revenue_log=sum(Revenue_log))%>%
+  ggplot()+
+  geom_bar(aes(as.factor(day),Revenue_log),stat='identity')
+
+ghour=data1%>%
+  group_by(hour)%>%summarise(Revenue_log=sum(Revenue_log))%>%
+  ggplot()+
+  geom_bar(aes(as.factor(hour),Revenue_log),stat='identity')
+
+gminute=data1%>%
+  group_by(minute)%>%summarise(Revenue_log=sum(Revenue_log))%>%
+  ggplot()+
+  geom_bar(aes(as.factor(minute),Revenue_log),stat='identity')+
+  coord_flip()
+
+gvisitNumber=data1%>%
+  ggplot()+
+  geom_point(aes(visitNumber,Revenue_log),position='jitter')+
+  geom_smooth(aes(visitNumber,Revenue_log),method='lm')
+
+goperatingSystem=data1%>%
+  ggplot()+
+  geom_bar(aes(operatingSystem,Revenue_log),stat='identity')+
+  coord_flip()
+
+gdeviceCategory=data1%>%
+  ggplot()+
+  geom_bar(aes(deviceCategory,Revenue_log),stat='identity')
+
+ghits=data1%>%
+  ggplot()+
+  geom_smooth(aes(hits,Revenue_log),method='lm')+
+  geom_point(aes(hits,Revenue_log))
+
+gpageViews=data1%>%
+  ggplot()+
+  geom_smooth(aes(pageviews,Revenue_log),method='lm')+
+  geom_point(aes(pageviews,Revenue_log))
+
+gbounces=data1%>%
+  ggplot()+
+  geom_violin(aes(bounces,Revenue_log))
+
+gnewVisits=data1%>%
+  ggplot()+
+  geom_bar(aes(newVisits,Revenue_log),stat='identity')
+
+gsessionDim=data1%>%
+  ggplot()+
+  geom_point(aes(sessionDim,Revenue_log))+
+  geom_smooth(aes(sessionDim,Revenue_log),method='lm')
+
+
+gtimeOnSite=data1%>%
+  ggplot()+
+  geom_point(aes(timeOnSite,Revenue_log))+
+  geom_smooth(aes(timeOnSite,Revenue_log),method='lm')
+
+gsource=data1%>%
+  ggplot()+
+  geom_bar(aes(source,Revenue_log),stat='identity')+
+  coord_flip()
+
+gmedium=data1%>%
+  ggplot()+
+  geom_bar(aes(medium,Revenue_log),stat='identity')+
+  coord_flip()
+
+gtrueDirect=data1%>%
+  ggplot()+
+  geom_bar(aes(trueDirect,Revenue_log),stat='identity')
+
+gisVideoAd=data1%>%
+  ggplot()+
+  geom_violin(aes(isVideoAd,Revenue_log))
+
+# select useful predictors
+
+data1=data1%>%
+  mutate(visitNumLess6=ifelse(visitNumber<6,T,F),
+         visitNumIn6_50=ifelse(visitNumber>=6&timeOnSite<50,T,F),
+         hitsIn4_18=ifelse(hits>=4&hits<18,T,F),
+         hitsIn18_70=ifelse(hits>=18&hits<70,T,F),
+         sessionDim0=ifelse(sessionDim==0,T,F),
+         timeOnSiteIn100_400=ifelse(timeOnSite>=100&timeOnSite<400,T,F),
+         timeOnSiteIn400_1800=ifelse(timeOnSite>=400&timeOnSite<1800,T,F))
+```
+
+# Model fit
+```{r}
+lm1=lm(Revenue_log~channelGrouping+date+year+month+day+hour+minute+visitNumber+operatingSystem+deviceCategory+continent+country+hits+pageviews+bounces+newVisits+sessionDim+timeOnSite+medium+trueDirect+isVideoAd+visitNumLess6+visitNumIn6_50+hitsIn4_18+hitsIn18_70+sessionDim0+timeOnSiteIn100_400+timeOnSiteIn400_1800,data=data1[1:train1,])
+lm2=update(lm1,Revenue_log~pageviews+medium+trueDirect+operatingSystem+visitNumber*visitNumLess6+hits*hitsIn4_18)
+
+lmer1=lmer(Revenue_log~pageviews+medium+trueDirect+operatingSystem+visitNumber+hits+(1|fullVisitorId),data=data1[1:train1,])
+lmer2=update(lmer1,Revenue_log~pageviews+medium+trueDirect+operatingSystem+visitNumber*visitNumLess6+hits*hitsIn4_18+(1|fullVisitorId))
+AIC(lm1,lm2,lmer1,lmer2)
+```
+
+

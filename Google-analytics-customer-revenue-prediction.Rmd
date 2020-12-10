@@ -1,0 +1,194 @@
+---
+title: "Google analytics customer revenue prediction"
+author: "Hao Shen"
+date: "2020/12/09"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load(tidyverse,reader,lubridate,lme4,sjPlot,ggpubr)
+# Data Import
+trainS=read_csv("trainS.csv", 
+                col_types=cols(date = col_date(format = "%Y-%m-%d"),
+                            year = col_number(), month = col_number(),
+                            day = col_number(), hour = col_number(),
+                            minute = col_number(), visitNumber = col_integer(),
+                            hits = col_integer(), pageviews = col_integer(),
+                            sessionDim = col_integer(), 
+                            timeOnSite = col_integer()))
+testS=read_csv("testS.csv", 
+                col_types=cols(date = col_date(format = "%Y-%m-%d"),
+                            year = col_number(), month = col_number(),
+                            day = col_number(), hour = col_number(),
+                            minute = col_number(), visitNumber = col_integer(),
+                            hits = col_integer(), pageviews = col_integer(),
+                            sessionDim = col_integer(), 
+                            timeOnSite = col_integer()))
+train=nrow(trainS)
+data=rbind(trainS,testS)
+data$Revenue_log=log(data$Revenue+1)
+# plot for outcome
+g1=ggplot(data)+
+  geom_histogram(aes(Revenue_log),bins=10)+
+  ggtitle('Log Revenue with Zero')
+g2=ggplot(data[data$Revenue>0,])+
+  geom_histogram(aes(Revenue_log),bins=50)+
+  ggtitle('Log Revenue without Zero')
+data1=data[data$Revenue>0,]
+train1=nrow(trainS[trainS$Revenue>0,])
+# plot for predictors
+gvisitNumber=data1%>%
+  ggplot()+
+  geom_point(aes(visitNumber,Revenue_log),position='jitter')+
+  geom_smooth(aes(visitNumber,Revenue_log),method='lm')+
+  ggtitle('VisitNumber VS Revenue_log')
+ghits=data1%>%
+  ggplot()+
+  geom_point(aes(hits,Revenue_log),position='jitter')+
+  geom_smooth(aes(hits,Revenue_log),method='lm')+
+  ggtitle('Hits VS Revenue_log')
+data1=data1%>%
+  mutate(visitNumLess6=ifelse(visitNumber<6,T,F),
+         visitNumIn6_50=ifelse(visitNumber>=6&timeOnSite<50,T,F),
+         hitsIn4_18=ifelse(hits>=4&hits<18,T,F),
+         hitsIn18_70=ifelse(hits>=18&hits<70,T,F),
+         sessionDim0=ifelse(sessionDim==0,T,F),
+         timeOnSiteIn100_400=ifelse(timeOnSite>=100&timeOnSite<400,T,F),
+         timeOnSiteIn400_1800=ifelse(timeOnSite>=400&timeOnSite<1800,T,F))
+# model fits
+lm1=lm(Revenue_log~channelGrouping+date+year+month+day+hour+minute+visitNumber+operatingSystem+deviceCategory+continent+country+hits+pageviews+bounces+newVisits+sessionDim+timeOnSite+medium+trueDirect+isVideoAd+visitNumLess6+visitNumIn6_50+hitsIn4_18+hitsIn18_70+sessionDim0+timeOnSiteIn100_400+timeOnSiteIn400_1800,data=data1[1:train1,])
+lm2=update(lm1,Revenue_log~pageviews+medium+trueDirect+operatingSystem+visitNumber*visitNumLess6+hits*hitsIn4_18)
+
+lmer1=lmer(Revenue_log~pageviews+medium+trueDirect+operatingSystem+visitNumber+hits+(1|fullVisitorId),data=data1[1:train1,])
+lmer2=update(lmer1,Revenue_log~pageviews+medium+trueDirect+operatingSystem+visitNumber*visitNumLess6+hits*hitsIn4_18+(1|fullVisitorId))
+```
+
+## Abstract
+
+Nowadays, more and more large company is implementing a data-driven marketing strategy and Google, as an Internet giant, is undoubtedly in a leading position. In this project provided by Google, we mainly cleaned and transformed the raw data sets and built a linear mixed-effects model combined with feature engineering to predict revenue from each customer based on their characteristic including time on sites, newcomer or old customer, etc. The model fits well at the middle of Q-Q plot, however, deviation occurs in two tails which requires further improvements. 
+
+## Introduction
+
+[Google Merchandise Store](https://shop.googlemerchandisestore.com) is an online shopping site that sells Google brands, including Youtube, Android and Google, products. The goods it sells include clothing, daily necessities, and stationery, covering all age groups from children to adults. As an online shop, it will naturally generate large historical customer behavior data that can be used for analysis and even further to predict future sales and support marketing decision making. 
+
+The data set of this project is available on [Kaggle](https://www.kaggle.com/c/ga-customer-revenue-prediction/data), which contains detailed transactions information such as date, geography, device, time, etc. from GStore and is consisted by two sub-sets:
+
+* One is the train set from August 1st 2016 to April 30th 2018, with 13 columns, 1.71 million observations and a size of 23.67GB; 
+* The other is test set from May 1st 2018 to October 15th 2018, with also 13 columns but only 0.402 million observations and a size of 7.04GB.
+
+Among all these 13 columns, 4 columns with Json format are extremely large and contain the most customer features we need for model fitting.
+
+## Method
+
+### Data conversion and cleaning
+
+Since the total size of *.csv files is larger than 30GB, it is hard to directly import them into computer memory. In order to solve this problem, we choose to firstly load them into SQLite database. Then we extract the 4 large Json columns (device, geoNetwork, totals, trafficSource) one by one through 'getSQLquery' function and transform them into flat data.frame format. Next, We start data cleaning also one by one column to reduce memory usage. we drop those sub-columns only contains single value like 'not available in demo dataset' and finally combine them four into a single data set. Finally, we get a data frame with 57 columns and 2,109,926 observations.
+
+Then, we use geom_col function to explore the components of 58 columns and transform their content into correct format. These transformations can be devided into tree parts:
+
+* Date and POSIX date transformation and split them into minute, hour, day, etc.
+* Replace NAs in parts of columns like transaction revenue, time on site, page views, etc. by 0.
+* Replace NAs in parts of columns like is new visits, is video ad, etc. by FALSE.
+* Delete other useless columns.
+
+Thanks to all above efforts, we finally reduce the data set into 3.36GB with 24 columns and it can now be used for EDA. 
+
+### Exploratory data analysis
+
+At first, let us take a look of the outcome variable Revenue variables. Since it is about money we choose to apply log transformation:
+$$Revenue=ln(Transaction Revenue+1)$$
+
+As shown in the left plot, there are 98.9% of target variable is zero. However if we ignore those data, we can obtain right plot which is a bit similar to a normal distribution. Besides, considering my computer cannot run even a simple linear regression model on these 3.36GB data sets with more than 2 million observations, we choose to directly delete those zero observations and fit model on those with non-zero revenue.
+
+Note: I initially thought that maybe I can firstly build a model to identify those zero transactions and then go to the second model to fit the results. But finally I failed.
+
+```{r echo=FALSE, fig.height=2, message=FALSE, warning=FALSE}
+ggarrange(g1,g2)
+```
+
+Then, for each of other 23 variables, we draw bar plots, line plots, scatter plots according to different types of variables (All these plot codes is in [Supplement of Code](Supplement of Code.nb.html)) and create several new logical features:
+
+* **visitNumLess6** which is FALSE when visit number of a customer exceeds 6.
+* **hitsIn4T18** which is TRUE when a customer has total hits between 4 and 18.
+* **timeOnSiteIn100T400** which is TRUE when a customer has total on site time between 100 and 400 seconds.
+* ...
+
+We choose to create these new features is because tons of data points located in these periods. 
+
+```{r echo=FALSE, fig.height=2, message=FALSE, warning=FALSE}
+ggarrange(gvisitNumber,ghits)
+```
+
+### Model fitting
+
+Here, let's first fit a basic linear model **lm1** with all other variables.
+$$Revenue_log=channelGrouping+date+year+month+day+hour+minute+visitNumber+$$
+$$operatingSystem+deviceCategory+continent+country+hits+pageviews+bounces+$$
+$$newVisits+sessionDim+timeOnSite+medium+trueDirect+isVideoAd$$
+$$+visitNumLess6+visitNumIn6T50+hitsIn4T18+hitsIn18T70+$$
+$$sessionDim0+timeOnSiteIn100T400+timeOnSiteIn400T1800$$
+Then, we need to delete some variables where collinearity exists and add some interactions to fit an updated model **lm2** as:
+$$Revenue_log=pageviews+medium+trueDirect+operatingSystem+$$
+$$visitNumber*visitNumLess6+hits*hitsIn4_18$$
+As a result, the second linear model got a just bit higher RSS and AIC but far more less variables.
+
+Then, since each customer has a unique **fullVisitorId**, and between each customers random effects occurs, we choose to fit a linear mixed-effect model **lmer1**.
+$$Revenue_log=pageviews+medium+trueDirect+operatingSystem+visitNumber+$$
+$$hits+(1|fullVisitorId)$$
+
+This model is better than simple linear regression as the AIC decreases from 55748.05 to 54849.30.
+
+Next, we should use the new features we created at beginning, to futher improve the model performance as **lmer2**:
+$$Revenue_log~pageviews+medium+trueDirect+operatingSystem+$$
+$$visitNumber*visitNumLess6+hits*hitsIn4T18+(1|fullVisitorId)$$
+And this is the best model with lowest AIC.
+```{r echo=FALSE,  message=FALSE, warning=FALSE}
+kableExtra::kable(AIC(lm1,lm2,lmer1,lmer2))%>%kableExtra::kable_styling()
+```
+
+## Result
+
+```{r echo=FALSE, fig.height=2, message=FALSE, warning=FALSE}
+x=plot_model(lmer2,type = 'diag')
+x[[1]]
+x[[2]]$fullVisitorId
+x[[3]]
+x[[4]]
+```
+
+As all results shows, the model fits well at the middle of the data set, but deviation occurs in two tails. The residual plots also shows a curve among points which also indicates the deviation that need further improvements. 
+
+## Discussion
+
+The data set used for regression is those with transaction revenue not equal to 0 which is only about 1% of the total data set. This indicates that there are lots of information about those zero transactions haven't been figured out. And if we combine this with the bad fittings of two tails, the problems maybe more interesting.
+
+The second thing is that even there is only about 21000 observations, there are more than 16000 unique fullVistorIDs. I am worried about whether this will have impacts on the linear mixed-effect model results.
+
+Besides, about variables' concentration at lower values, I believe this need to dig further.
+
+\newpage
+## Appendix
+
+1. [Kaggle-Google Analytics Customer Revenue Prediction](https://www.kaggle.com/c/ga-customer-revenue-prediction/data)
+2. [sjPlot package | R Documentation](https://www.rdocumentation.org/packages/sjPlot/versions/2.8.6)
+3. [Create Awesome HTML Table with knitr::kable and kableExtra](https://cran.r-project.org/web/packages/kableExtra/vignettes/awesome_table_in_html.html)
+4. [R Database Interface · DBI](https://dbi.r-dbi.org/)
+5. [R - Flatten JSON columns to make single data frame](https://www.kaggle.com/mrlong/r-flatten-json-columns-to-make-single-data-frame)
+
+### lm1 summary
+```{r echo=FALSE, fig.height=2, message=FALSE, warning=FALSE}
+summary(lm1)
+```
+### lm2 summary
+```{r echo=FALSE, fig.height=2, message=FALSE, warning=FALSE}
+summary(lm2)
+```
+### lmer1 summary
+```{r echo=FALSE, fig.height=2, message=FALSE, warning=FALSE}
+summary(lmer1)
+```
+### lmer2 summary
+```{r echo=FALSE, fig.height=2, message=FALSE, warning=FALSE}
+summary(lmer2)
+```
